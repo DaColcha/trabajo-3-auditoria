@@ -4,7 +4,7 @@ import csv
 from datetime import datetime
 
 # Configuración de conexión a SQL Server
-CONN_STRING = "DRIVER={ODBC Driver 17 for SQL Server};SERVER=localhost,1434;DATABASE=pubs;UID=sa;PWD=root*2025"
+CONN_STRING = "DRIVER={ODBC Driver 17 for SQL Server};SERVER=localhost,1434;DATABASE=MultiSchemaAnomalies;UID=sa;PWD=root*2025"
 
 def execute_query(query):
     """Ejecuta una consulta en SQL Server y devuelve los resultados."""
@@ -43,14 +43,18 @@ def detect_orphan_records():
     query = """
     SELECT 
         fk.name AS ForeignKeyName,
-        OBJECT_NAME(fk.parent_object_id) AS ChildTable,
+        SCHEMA_NAME(t.schema_id) AS SchemaName,  -- Obtenemos el esquema de la tabla hija
+        t.name AS ChildTable,
         c1.name AS ChildColumn,
-        OBJECT_NAME(fk.referenced_object_id) AS ParentTable,
+        SCHEMA_NAME(pt.schema_id) AS ParentSchemaName,  -- Obtenemos el esquema de la tabla padre
+        pt.name AS ParentTable,
         c2.name AS ParentColumn
     FROM sys.foreign_keys fk
     INNER JOIN sys.foreign_key_columns fkc ON fk.object_id = fkc.constraint_object_id
     INNER JOIN sys.columns c1 ON fkc.parent_object_id = c1.object_id AND fkc.parent_column_id = c1.column_id
-    INNER JOIN sys.columns c2 ON fkc.referenced_object_id = c2.object_id AND fkc.referenced_column_id = c2.column_id;
+    INNER JOIN sys.columns c2 ON fkc.referenced_object_id = c2.object_id AND fkc.referenced_column_id = c2.column_id
+    INNER JOIN sys.tables t ON fkc.parent_object_id = t.object_id
+    INNER JOIN sys.tables pt ON fkc.referenced_object_id = pt.object_id;
     """
 
     foreign_keys = execute_query(query)
@@ -58,14 +62,16 @@ def detect_orphan_records():
 
     for fk in foreign_keys:
         child_table = fk["ChildTable"]
+        child_schema = fk["SchemaName"]
         child_column = fk["ChildColumn"]
         parent_table = fk["ParentTable"]
+        parent_schema = fk["ParentSchemaName"]
         parent_column = fk["ParentColumn"]
 
         orphan_query = f"""
-        SELECT '{child_table}' AS TableName, {child_column} AS OrphanValue
-        FROM {child_table}
-        WHERE {child_column} NOT IN (SELECT {parent_column} FROM {parent_table});
+        SELECT '{child_schema}.{child_table}' AS TableName, {child_column} AS OrphanValue
+        FROM {child_schema}.{child_table}
+        WHERE {child_column} NOT IN (SELECT {parent_column} FROM {parent_schema}.{parent_table});
         """
 
         orphan_data = execute_query(orphan_query)
@@ -77,6 +83,7 @@ def detect_duplicate_keys():
     """Detecta claves duplicadas en índices únicos."""
     query = """
     SELECT 
+        SCHEMA_NAME(t.schema_id) AS SchemaName,  -- Obtenemos el esquema de la tabla
         t.name AS TableName, 
         c.name AS ColumnName
     FROM sys.indexes i
@@ -90,12 +97,13 @@ def detect_duplicate_keys():
     duplicate_keys = []
 
     for key in unique_keys:
+        schema_name = key["SchemaName"]
         table_name = key["TableName"]
         column_name = key["ColumnName"]
 
         dup_query = f"""
-        SELECT '{table_name}' AS TableName, '{column_name}' AS ColumnName, {column_name} AS DuplicateValue, COUNT(*) AS DuplicateCount
-        FROM {table_name}
+        SELECT '{schema_name}.{table_name}' AS TableName, '{column_name}' AS ColumnName, {column_name} AS DuplicateValue, COUNT(*) AS DuplicateCount
+        FROM {schema_name}.{table_name}
         GROUP BY {column_name}
         HAVING COUNT(*) > 1;
         """
@@ -108,7 +116,7 @@ def detect_duplicate_keys():
 def detect_missing_foreign_keys():
     """Detecta relaciones que deberían tener claves foráneas pero no están implementadas."""
     query = """
-    SELECT t.name AS TableName, c.name AS ColumnName
+    SELECT SCHEMA_NAME(t.schema_id) AS SchemaName, t.name AS TableName, c.name AS ColumnName
     FROM sys.tables t
     INNER JOIN sys.columns c ON t.object_id = c.object_id
     WHERE c.name LIKE '%Id%' 
@@ -127,11 +135,13 @@ def detect_foreign_keys_not_in_primary_key():
     query = """
     SELECT 
         fk.name AS ForeignKeyName,
-        OBJECT_NAME(fk.parent_object_id) AS TableName,
+        SCHEMA_NAME(t.schema_id) AS SchemaName,  -- Obtenemos el esquema de la tabla
+        t.name AS TableName,
         c1.name AS ForeignKeyColumn
     FROM sys.foreign_keys fk
     INNER JOIN sys.foreign_key_columns fkc ON fk.object_id = fkc.constraint_object_id
     INNER JOIN sys.columns c1 ON fkc.parent_object_id = c1.object_id AND fkc.parent_column_id = c1.column_id
+    INNER JOIN sys.tables t ON fkc.parent_object_id = t.object_id
     WHERE NOT EXISTS (
         SELECT 1 FROM sys.key_constraints pk
         INNER JOIN sys.index_columns ic ON pk.parent_object_id = ic.object_id AND pk.unique_index_id = ic.index_id
@@ -141,6 +151,7 @@ def detect_foreign_keys_not_in_primary_key():
 
     fks_not_in_pk = execute_query(query)
     log_results("FK_no_son_parte_de_PK", fks_not_in_pk)
+
 
 def main():
     print("[INFO] Iniciando auditoría de base de datos en SQL Server...")
