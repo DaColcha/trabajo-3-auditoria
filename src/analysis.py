@@ -1,15 +1,18 @@
 import pyodbc
 import json
 import csv
+import sys
+import os
 from datetime import datetime
 
 
-global connection
+connection = None
 
 def connect_to_db(server, database, username, password):
+    global connection
     
     try:
-        connection = pyodbc.connect(f"DRIVER=ODBC Driver 17 for SQL Server;SERVER={server};DATABASE={database};UID={username};PWD={password}")
+        connection = pyodbc.connect(f"DRIVER=ODBC Driver 18 for SQL Server;SERVER={server};DATABASE={database};UID={username};PWD={password};TrustServerCertificate=yes;")
         return True
     except Exception as e:
         print(f"Error: {e}")
@@ -17,8 +20,12 @@ def connect_to_db(server, database, username, password):
 
 def execute_query(query):
     """Ejecuta una consulta en SQL Server y devuelve los resultados."""
-    conn = connection
-    cursor = conn.cursor()
+    global connection  # Access the global connection
+    
+    if connection is None:
+        raise Exception("No hay conexión establecida con la base de datos")
+        
+    cursor = connection.cursor()
     cursor.execute(query)
     # Obtener nombres de columnas
     columns = [columna[0] for columna in cursor.description]  
@@ -26,26 +33,52 @@ def execute_query(query):
     # Convertir resultado a lista de diccionarios
     results = [dict(zip(columns, row)) for row in cursor.fetchall()]
     cursor.close()
-    conn.close()
-    return results
+    return results  # Note: Don't close the connection here
+
+def close_connection():
+    """Cierra la conexión a la base de datos"""
+    global connection
+    if connection:
+        connection.close()
+        connection = None
+
+def get_application_path():
+    """Get the path of the executable or script"""
+    if getattr(sys, 'frozen', False):
+        # Running as executable
+        return os.path.dirname(sys.executable)
+    # Running as script
+    return os.path.dirname(os.path.abspath(__file__))
+
+def get_results_path():
+    """Get the path for results directory"""
+    base_path = get_application_path()
+    results_path = os.path.join(base_path, "results")
+    if not os.path.exists(results_path):
+        os.makedirs(results_path)
+    return results_path
 
 def log_results(check_type, results):
     """Guarda los resultados en un archivo JSON y CSV."""
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    output_path = get_results_path()
     
     # Guardar en JSON
-    with open(f"{check_type}_{timestamp}.json", "w", encoding="utf-8") as json_file:
+    json_path = os.path.join(output_path, f"{check_type}_{timestamp}.json")
+    with open(json_path, "w", encoding="utf-8") as json_file:
         json.dump(results, json_file, indent=4, default=str)
 
     # Guardar en CSV
-    with open(f"{check_type}_{timestamp}.csv", "w", encoding="utf-8", newline="") as csv_file:
+    csv_path = os.path.join(output_path, f"{check_type}_{timestamp}.csv")
+    with open(csv_path, "w", encoding="utf-8", newline="") as csv_file:
         writer = csv.writer(csv_file)
         if results:
             writer.writerow(results[0].keys())  # Encabezados
             for row in results:
                 writer.writerow(row.values())
 
-    print(f"[INFO] Resultados guardados en {check_type}_{timestamp}.json y {check_type}_{timestamp}.csv")
+    print(f"[INFO] Resultados guardados en {json_path} y {csv_path}")
+    return json_path  # Return the JSON file path for GUI display
 
 def detect_orphan_records():
     """Detecta registros huérfanos en la base de datos."""
@@ -86,7 +119,7 @@ def detect_orphan_records():
         orphan_data = execute_query(orphan_query)
         orphan_records.extend(orphan_data)
 
-    log_results("FKs_no_asociadas_a_PK", orphan_records)
+    return log_results("FKs_no_asociadas_a_PK", orphan_records)
 
 def detect_duplicate_keys():
     """Detecta claves duplicadas en índices únicos."""
@@ -120,7 +153,7 @@ def detect_duplicate_keys():
         duplicates = execute_query(dup_query)
         duplicate_keys.extend(duplicates)
 
-    log_results("PK_duplicadas", duplicate_keys)
+    return log_results("PK_duplicadas", duplicate_keys)
 
 def detect_missing_foreign_keys():
     """Detecta relaciones que deberían tener claves foráneas pero no están implementadas."""
@@ -137,7 +170,7 @@ def detect_missing_foreign_keys():
     """
 
     missing_fks = execute_query(query)
-    log_results("tablas_sin_FK", missing_fks)
+    return log_results("tablas_sin_FK", missing_fks)
 
 def detect_foreign_keys_not_in_primary_key():
     """Detecta claves foráneas que no forman parte de una clave primaria."""
@@ -159,7 +192,7 @@ def detect_foreign_keys_not_in_primary_key():
     """
 
     fks_not_in_pk = execute_query(query)
-    log_results("FK_no_son_parte_de_PK", fks_not_in_pk)
+    return log_results("FK_no_son_parte_de_PK", fks_not_in_pk)
 
 
 def main():
