@@ -3,12 +3,21 @@ import json
 import csv
 from datetime import datetime
 
-# Configuración de conexión a SQL Server
-CONN_STRING = "DRIVER={ODBC Driver 17 for SQL Server};SERVER=localhost,1434;DATABASE=MultiSchemaAnomalies;UID=sa;PWD=root*2025"
+
+global connection
+
+def connect_to_db(server, database, username, password):
+    
+    try:
+        connection = pyodbc.connect(f"DRIVER=ODBC Driver 17 for SQL Server;SERVER={server};DATABASE={database};UID={username};PWD={password}")
+        return True
+    except Exception as e:
+        print(f"Error: {e}")
+        return False    
 
 def execute_query(query):
     """Ejecuta una consulta en SQL Server y devuelve los resultados."""
-    conn = pyodbc.connect(CONN_STRING)
+    conn = connection
     cursor = conn.cursor()
     cursor.execute(query)
     # Obtener nombres de columnas
